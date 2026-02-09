@@ -1,4 +1,4 @@
-# Where Are You Compass
+# Line of Sight
 
 A browser app that:
 - tracks your live GPS position,
