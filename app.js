@@ -2,15 +2,17 @@ const state = {
   current: null,
   target: null,
   sensorHeading: null,
-  movementHeading: null,
+  sensorAbsolute: false,
+  gpsHeading: null,
   manualHeading: 0,
   watchId: null,
   lastPosition: null,
+  lastOrientationEventAt: 0,
+  orientationListening: false,
 };
 
 const ui = {
-  startLocationBtn: document.getElementById("startLocationBtn"),
-  enableCompassBtn: document.getElementById("enableCompassBtn"),
+  enableSensorsBtn: document.getElementById("enableSensorsBtn"),
   addressForm: document.getElementById("addressForm"),
   addressInput: document.getElementById("addressInput"),
   manualHeading: document.getElementById("manualHeading"),
@@ -77,21 +79,27 @@ function formatDistance(meters) {
   return `${(meters / 1000).toFixed(2)} km`;
 }
 
-function formatCoordinates({ lat, lon }) {
-  return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+function formatCoordinates({ lat, lon, accuracy }) {
+  if (!Number.isFinite(accuracy)) {
+    return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  }
+  return `${lat.toFixed(6)}, ${lon.toFixed(6)} (+/- ${Math.round(accuracy)} m)`;
 }
 
-function setStatus(message, isError = false) {
+function setStatus(message, tone = "info") {
   ui.statusLine.textContent = message;
-  ui.statusLine.style.color = isError ? "#ffb1a9" : "#ffd990";
+  ui.statusLine.dataset.tone = tone;
 }
 
 function getActiveHeading() {
-  if (state.sensorHeading !== null) {
-    return { value: state.sensorHeading, source: "device sensor" };
+  if (state.sensorHeading !== null && state.sensorAbsolute) {
+    return { value: state.sensorHeading, source: "motion sensor (true north)" };
   }
-  if (state.movementHeading !== null) {
-    return { value: state.movementHeading, source: "gps movement" };
+  if (state.gpsHeading !== null) {
+    return { value: state.gpsHeading, source: "gps course" };
+  }
+  if (state.sensorHeading !== null) {
+    return { value: state.sensorHeading, source: "motion sensor (relative)" };
   }
   return { value: state.manualHeading, source: "manual slider" };
 }
@@ -105,7 +113,7 @@ function updateCompass() {
   if (!state.current || !state.target) {
     ui.targetNeedle.classList.add("hidden");
     ui.distanceText.textContent = "--";
-    ui.guidanceText.textContent = "Set a target address.";
+    ui.guidanceText.textContent = "Enable sensors and set a destination.";
     return;
   }
 
@@ -122,12 +130,13 @@ function updateCompass() {
     state.target.lon,
   );
   const relative = ((bearingToTarget - heading + 540) % 360) - 180;
+
   ui.targetNeedle.classList.remove("hidden");
   ui.targetNeedle.style.transform = `rotate(${relative}deg)`;
   ui.distanceText.textContent = formatDistance(distanceMeters);
 
   if (Math.abs(relative) <= 6) {
-    ui.guidanceText.textContent = `Ahead. Keep moving forward.`;
+    ui.guidanceText.textContent = "Straight ahead.";
   } else if (relative < 0) {
     ui.guidanceText.textContent = `Turn left ${Math.round(Math.abs(relative))}deg`;
   } else {
@@ -135,28 +144,44 @@ function updateCompass() {
   }
 }
 
-function onLocationSuccess(position) {
-  const lat = position.coords.latitude;
-  const lon = position.coords.longitude;
-  const next = { lat, lon };
+function updateGpsHeadingFromPosition(nextPosition, coords) {
+  let headingUpdated = false;
 
-  if (state.lastPosition) {
+  if (Number.isFinite(coords.heading) && coords.heading >= 0) {
+    const speed = Number(coords.speed);
+    if (!Number.isFinite(speed) || speed > 0.5) {
+      state.gpsHeading = smoothAngle(state.gpsHeading, coords.heading, 0.36);
+      headingUpdated = true;
+    }
+  }
+
+  if (!headingUpdated && state.lastPosition) {
     const movedMeters = calculateDistanceMeters(
       state.lastPosition.lat,
       state.lastPosition.lon,
-      next.lat,
-      next.lon,
+      nextPosition.lat,
+      nextPosition.lon,
     );
-    if (movedMeters >= 3) {
+
+    if (movedMeters >= 4) {
       const movementBearing = calculateBearing(
         state.lastPosition.lat,
         state.lastPosition.lon,
-        next.lat,
-        next.lon,
+        nextPosition.lat,
+        nextPosition.lon,
       );
-      state.movementHeading = smoothAngle(state.movementHeading, movementBearing, 0.35);
+      state.gpsHeading = smoothAngle(state.gpsHeading, movementBearing, 0.34);
     }
   }
+}
+
+function onLocationSuccess(position) {
+  const lat = position.coords.latitude;
+  const lon = position.coords.longitude;
+  const accuracy = position.coords.accuracy;
+  const next = { lat, lon, accuracy };
+
+  updateGpsHeadingFromPosition(next, position.coords);
 
   state.lastPosition = next;
   state.current = next;
@@ -165,73 +190,160 @@ function onLocationSuccess(position) {
 }
 
 function onLocationError(error) {
-  const message =
-    error && typeof error.message === "string" ? error.message : "Location access failed.";
-  setStatus(`Location error: ${message}`, true);
+  const codeMessage = {
+    1: "permission denied",
+    2: "position unavailable",
+    3: "request timed out",
+  };
+  const fallback = error && typeof error.message === "string" ? error.message : "Location access failed.";
+  const reason = codeMessage[error && error.code] || fallback;
+  setStatus(`Location issue: ${reason}`, "error");
 }
 
-function startLocationTracking() {
+function getCurrentPositionPromise(options) {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(resolve, reject, options);
+  });
+}
+
+function startLocationWatch() {
   if (!("geolocation" in navigator)) {
-    setStatus("This browser does not support geolocation.", true);
-    return;
+    return false;
   }
 
   if (state.watchId !== null) {
     navigator.geolocation.clearWatch(state.watchId);
   }
 
-  setStatus("Requesting live GPS location...");
   state.watchId = navigator.geolocation.watchPosition(onLocationSuccess, onLocationError, {
     enableHighAccuracy: true,
-    timeout: 15000,
+    timeout: 20000,
     maximumAge: 1000,
   });
+  return true;
 }
 
-function getHeadingFromEvent(event) {
-  if (typeof event.webkitCompassHeading === "number") {
-    return normalizeDegrees(event.webkitCompassHeading);
+async function enableGeolocation() {
+  if (!("geolocation" in navigator)) {
+    setStatus("This browser has no geolocation API.", "error");
+    return false;
   }
-  if (event.absolute === true && typeof event.alpha === "number") {
-    return normalizeDegrees(360 - event.alpha);
+
+  try {
+    setStatus("Requesting precise GPS permission...", "info");
+    const initialPosition = await getCurrentPositionPromise({
+      enableHighAccuracy: true,
+      timeout: 20000,
+      maximumAge: 0,
+    });
+    onLocationSuccess(initialPosition);
+    startLocationWatch();
+    return true;
+  } catch (error) {
+    onLocationError(error);
+    return false;
   }
-  if (typeof event.alpha === "number") {
-    return normalizeDegrees(360 - event.alpha);
+}
+
+function getScreenOrientationAngle() {
+  if (screen.orientation && Number.isFinite(screen.orientation.angle)) {
+    return screen.orientation.angle;
   }
+  if (typeof window.orientation === "number") {
+    return window.orientation;
+  }
+  return 0;
+}
+
+function getHeadingFromOrientationEvent(event) {
+  if (Number.isFinite(event.webkitCompassHeading)) {
+    return {
+      heading: normalizeDegrees(event.webkitCompassHeading),
+      absolute: true,
+    };
+  }
+
+  if (Number.isFinite(event.alpha)) {
+    return {
+      heading: normalizeDegrees(360 - event.alpha + getScreenOrientationAngle()),
+      absolute: event.absolute === true,
+    };
+  }
+
   return null;
 }
 
 function handleOrientation(event) {
-  const incoming = getHeadingFromEvent(event);
-  if (incoming === null) {
+  const reading = getHeadingFromOrientationEvent(event);
+  if (!reading) {
     return;
   }
-  state.sensorHeading = smoothAngle(state.sensorHeading, incoming, 0.32);
+
+  state.sensorHeading = smoothAngle(state.sensorHeading, reading.heading, 0.3);
+  state.sensorAbsolute = reading.absolute;
+  state.lastOrientationEventAt = Date.now();
   updateCompass();
+}
+
+function ensureOrientationListeners() {
+  if (state.orientationListening) {
+    return;
+  }
+  window.addEventListener("deviceorientationabsolute", handleOrientation, true);
+  window.addEventListener("deviceorientation", handleOrientation, true);
+  state.orientationListening = true;
+}
+
+async function requestMotionPermissionsIfNeeded() {
+  if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+    const motionResult = await DeviceMotionEvent.requestPermission();
+    if (motionResult !== "granted") {
+      return false;
+    }
+  }
+
+  if (
+    typeof DeviceOrientationEvent !== "undefined" &&
+    typeof DeviceOrientationEvent.requestPermission === "function"
+  ) {
+    const orientationResult = await DeviceOrientationEvent.requestPermission();
+    if (orientationResult !== "granted") {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 async function enableOrientation() {
   if (!("DeviceOrientationEvent" in window)) {
-    setStatus("This browser has no orientation sensor API.", true);
-    return;
+    setStatus("Motion sensor API unavailable. GPS heading will be used while moving.", "warn");
+    return false;
   }
 
   try {
-    const maybePermission = DeviceOrientationEvent.requestPermission;
-    if (typeof maybePermission === "function") {
-      const result = await maybePermission.call(DeviceOrientationEvent);
-      if (result !== "granted") {
-        setStatus("Compass sensor permission denied.", true);
-        return;
-      }
+    const permissionGranted = await requestMotionPermissionsIfNeeded();
+    if (!permissionGranted) {
+      setStatus("Motion permission was denied.", "error");
+      return false;
     }
 
-    window.addEventListener("deviceorientationabsolute", handleOrientation, true);
-    window.addEventListener("deviceorientation", handleOrientation, true);
-    setStatus("Compass sensor enabled.");
+    ensureOrientationListeners();
+
+    setTimeout(() => {
+      if (Date.now() - state.lastOrientationEventAt > 2500) {
+        setStatus(
+          "Motion allowed but no heading events yet. On iPhone, enable Safari Motion & Orientation Access.",
+          "warn",
+        );
+      }
+    }, 2800);
+
+    return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not enable compass sensor.";
-    setStatus(message, true);
+    const message = error instanceof Error ? error.message : "Could not enable motion sensor.";
+    setStatus(message, "error");
+    return false;
   }
 }
 
@@ -251,6 +363,7 @@ async function geocodeAddress(address) {
   if (!response.ok) {
     throw new Error(`Geocoder failed (${response.status})`);
   }
+
   const data = await response.json();
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error("No match found for that address.");
@@ -266,24 +379,52 @@ async function geocodeAddress(address) {
   return { lat, lon, label: top.display_name || address };
 }
 
+async function handleEnableSensorsClick() {
+  ui.enableSensorsBtn.disabled = true;
+  ui.enableSensorsBtn.textContent = "Requesting permissions...";
+
+  const geoEnabled = await enableGeolocation();
+  const motionEnabled = await enableOrientation();
+
+  if (geoEnabled && motionEnabled) {
+    setStatus("GPS and motion active. Enter an address and point.", "ok");
+  } else if (geoEnabled) {
+    setStatus("GPS active. Motion unavailable; heading updates when you move.", "warn");
+  } else if (motionEnabled) {
+    setStatus("Motion active, but location denied. Enable location to navigate.", "warn");
+  } else {
+    setStatus("Sensors were not enabled. Check browser permissions and retry.", "error");
+  }
+
+  ui.enableSensorsBtn.disabled = false;
+  ui.enableSensorsBtn.textContent = "Re-check Sensors";
+}
+
 async function handleAddressSubmit(event) {
   event.preventDefault();
   const address = ui.addressInput.value.trim();
   if (!address) {
-    setStatus("Enter an address first.", true);
+    setStatus("Enter an address first.", "error");
     return;
   }
 
-  setStatus("Geocoding address...");
+  setStatus("Geocoding destination...", "info");
+
   try {
     const result = await geocodeAddress(address);
     state.target = result;
     ui.targetText.textContent = `${result.label} (${result.lat.toFixed(5)}, ${result.lon.toFixed(5)})`;
-    setStatus("Target locked. Compass now points to destination.");
+
+    if (!state.current) {
+      setStatus("Destination set. Enable GPS so compass can point from your location.", "warn");
+    } else {
+      setStatus("Destination locked.", "ok");
+    }
+
     updateCompass();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to geocode address.";
-    setStatus(message, true);
+    setStatus(message, "error");
   }
 }
 
@@ -294,8 +435,7 @@ function handleManualHeadingInput() {
 }
 
 function init() {
-  ui.startLocationBtn.addEventListener("click", startLocationTracking);
-  ui.enableCompassBtn.addEventListener("click", enableOrientation);
+  ui.enableSensorsBtn.addEventListener("click", handleEnableSensorsClick);
   ui.addressForm.addEventListener("submit", handleAddressSubmit);
   ui.manualHeading.addEventListener("input", handleManualHeadingInput);
   updateCompass();
