@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Where Are You Compass</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel">
+        <h1>Where Are You Compass</h1>
+        <p class="subtitle">
+          Type an address. The compass points to it from your current position and re-orients as you
+          move.
+        </p>
+
+        <div class="controls">
+          <button id="startLocationBtn" class="btn btn-primary" type="button">Start Location Tracking</button>
+          <button id="enableCompassBtn" class="btn" type="button">Enable Compass Sensor</button>
+        </div>
+
+        <form id="addressForm" class="address-form">
+          <label for="addressInput">Destination address</label>
+          <div class="address-row">
+            <input id="addressInput" name="address" type="text" placeholder="123 Main St, City, State" required />
+            <button class="btn btn-primary" type="submit">Set Target</button>
+          </div>
+        </form>
+
+        <div class="manual-heading">
+          <label for="manualHeading">Manual heading fallback</label>
+          <input id="manualHeading" type="range" min="0" max="359" value="0" />
+          <span id="manualHeadingValue">0deg</span>
+        </div>
+
+        <p id="statusLine" class="status">Waiting for permissions.</p>
+
+        <dl class="readout">
+          <div>
+            <dt>Current position</dt>
+            <dd id="positionText">--</dd>
+          </div>
+          <div>
+            <dt>Target</dt>
+            <dd id="targetText">--</dd>
+          </div>
+          <div>
+            <dt>Distance</dt>
+            <dd id="distanceText">--</dd>
+          </div>
+          <div>
+            <dt>Heading source</dt>
+            <dd id="headingSourceText">--</dd>
+          </div>
+          <div>
+            <dt>Guidance</dt>
+            <dd id="guidanceText">Set a target address.</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="compass-wrap">
+        <div class="compass-shell">
+          <div class="top-index"></div>
+
+          <div id="compassRose" class="compass-rose">
+            <span class="mark n">N</span>
+            <span class="mark ne">NE</span>
+            <span class="mark e">E</span>
+            <span class="mark se">SE</span>
+            <span class="mark s">S</span>
+            <span class="mark sw">SW</span>
+            <span class="mark w">W</span>
+            <span class="mark nw">NW</span>
+          </div>
+
+          <div id="targetNeedle" class="target-needle hidden" aria-hidden="true"></div>
+          <div class="center-cap"></div>
+          <div class="glass"></div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
